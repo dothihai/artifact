@@ -952,41 +952,94 @@ const state = {};   // state[topicId][qIndex] = selectedOptionKey
 let flags = {};     // flags['tid-idx'] = true
 const TOTAL_Q = Object.values(QUESTIONS).reduce((s, l) => s + l.length, 0);
 const STORAGE_KEY = 'cpmai-progress';
-const hasStorage = (() => {
-  try { return !!(window.storage && typeof window.storage.get === 'function'); }
+const EXAM_KEY   = 'cpmai-exam';
+const UI_KEY     = 'cpmai-ui';
+
+/* Lưu trữ: ưu tiên localStorage (giữ được sau khi reload / đóng mở lại trình duyệt),
+   dự phòng window.storage của môi trường nhúng, cuối cùng là bộ nhớ tạm. */
+const lsOK = (() => {
+  try { const k = '__t'; localStorage.setItem(k, '1'); localStorage.removeItem(k); return true; }
   catch (e) { return false; }
 })();
+const winOK = (() => {
+  try { return !!(window.storage && typeof window.storage.get === 'function'); } catch (e) { return false; }
+})();
+const memStore = {};
+const hasStorage = lsOK || winOK;
+
+const store = {
+  async get(k) {
+    if (lsOK) { try { return localStorage.getItem(k); } catch (e) {} }
+    if (winOK) { try { const r = await window.storage.get(k); return r && r.value != null ? r.value : null; } catch (e) {} }
+    return memStore[k] != null ? memStore[k] : null;
+  },
+  async set(k, v) {
+    memStore[k] = v;
+    if (lsOK) { try { localStorage.setItem(k, v); return; } catch (e) {} }
+    if (winOK) { try { await window.storage.set(k, v); } catch (e) {} }
+  },
+  async del(k) {
+    delete memStore[k];
+    if (lsOK) { try { localStorage.removeItem(k); } catch (e) {} }
+    if (winOK) { try { await window.storage.delete(k); } catch (e) {} }
+  }
+};
 
 /* ===================== Persistence ===================== */
 let saveTimer = null;
-function scheduleSave() { clearTimeout(saveTimer); saveTimer = setTimeout(saveProgress, 400); }
+function scheduleSave() { clearTimeout(saveTimer); saveTimer = setTimeout(saveProgress, 300); }
 
 async function saveProgress() {
-  if (!hasStorage) return;
-  try {
-    await window.storage.set(STORAGE_KEY, JSON.stringify({ answers: state, flags: flags }));
-  } catch (e) { console.error('Không lưu được tiến độ:', e); }
+  try { await store.set(STORAGE_KEY, JSON.stringify({ answers: state, flags: flags })); }
+  catch (e) { console.error('Không lưu được tiến độ:', e); }
 }
 
 async function loadProgress() {
-  if (!hasStorage) return;
   try {
-    const res = await window.storage.get(STORAGE_KEY);
-    if (res && res.value) {
-      const data = JSON.parse(res.value);
-      if (data && data.answers) {
-        Object.keys(data.answers).forEach(tid => { state[tid] = data.answers[tid] || {}; });
-      }
-      if (data && data.flags) flags = data.flags;
-    }
+    const raw = await store.get(STORAGE_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (data && data.answers) Object.keys(data.answers).forEach(tid => { state[tid] = data.answers[tid] || {}; });
+    if (data && data.flags) flags = data.flags;
   } catch (e) { /* chưa có dữ liệu — bỏ qua */ }
+}
+
+/* Lưu / khôi phục bài thi thử đang làm dở */
+let examSaveTimer = null;
+function scheduleExamSave() { clearTimeout(examSaveTimer); examSaveTimer = setTimeout(saveExam, 300); }
+async function saveExam() {
+  if (!exam) { await store.del(EXAM_KEY); return; }
+  try {
+    await store.set(EXAM_KEY, JSON.stringify({
+      qs: exam.qs.map(x => ({ tid: x.tid, idx: x.idx })),
+      ans: exam.ans, secsLeft: exam.secsLeft, submitted: exam.submitted, savedAt: Date.now()
+    }));
+  } catch (e) {}
+}
+async function loadExam() {
+  try {
+    const raw = await store.get(EXAM_KEY);
+    if (!raw) return false;
+    const d = JSON.parse(raw);
+    if (!d || !Array.isArray(d.qs) || !d.qs.length) return false;
+    const qs = [];
+    for (const it of d.qs) {
+      const q = (QUESTIONS[it.tid] || [])[it.idx];
+      if (!q) return false;
+      qs.push({ tid: it.tid, idx: it.idx, q: q });
+    }
+    let secs = d.secsLeft;
+    if (!d.submitted && d.savedAt) secs = Math.max(0, secs - Math.floor((Date.now() - d.savedAt) / 1000));
+    exam = { qs: qs, ans: d.ans || {}, secsLeft: secs, interval: null, submitted: !!d.submitted };
+    return true;
+  } catch (e) { return false; }
 }
 
 async function resetAll() {
   if (!confirm('Xóa toàn bộ tiến độ luyện tập và câu đã đánh dấu?')) return;
   Object.keys(state).forEach(k => delete state[k]);
   flags = {};
-  if (hasStorage) { try { await window.storage.delete(STORAGE_KEY); } catch (e) {} }
+  await store.del(STORAGE_KEY);
   refreshStats(); initOverview(); updateNavCounts();
   document.querySelectorAll('.quiz-list[id^="quiz-list-"]').forEach(el => { el.innerHTML = ''; });
   TOPIC_META.forEach(m => renderQuiz(m.id));
@@ -1067,21 +1120,72 @@ function initOverview() {
   });
 }
 
-/* ===================== Navigation ===================== */
+/* ===================== Navigation: định tuyến bằng URL hash ===================== */
+function validPage(id) {
+  id = String(id);
+  if (['home', 'exam', 'review', 'flagged'].indexOf(id) >= 0) return id;
+  if (TOPIC_META.some(m => String(m.id) === id)) return id;
+  return null;
+}
+function pageFromHash() {
+  let raw = '';
+  try { raw = decodeURIComponent((location.hash || '').replace(/^#\/?/, '')).trim(); } catch (e) {}
+  return validPage(raw);
+}
+let currentPage = null;
+let suppressHashHandler = false;
+const scrollPos = {};
+
+function rememberScroll() { if (currentPage) scrollPos[currentPage] = window.scrollY || 0; }
+function restoreScroll(page) {
+  const y = scrollPos[page] || 0;
+  requestAnimationFrame(() => window.scrollTo(0, y));
+}
+
+/* Điều hướng do người dùng bấm: đổi URL => tạo mục lịch sử, Back/Forward hoạt động */
 function selectTopic(id) {
+  const page = validPage(id) || 'home';
+  const target = '#/' + page;
+  if (location.hash !== target) { rememberScroll(); location.hash = target; }
+  else { renderPage(page); }
+}
+
+/* Đổi trang nhưng không tạo mục lịch sử mới (dùng lúc khởi động) */
+function replaceTopic(id) {
+  const page = validPage(id) || 'home';
+  const target = '#/' + page;
+  if (location.hash !== target) {
+    suppressHashHandler = true;
+    try { history.replaceState(null, '', location.pathname + location.search + target); }
+    catch (e) { location.hash = target; }
+    setTimeout(() => { suppressHashHandler = false; }, 0);
+  }
+  renderPage(page);
+}
+
+function renderPage(id) {
+  const page = validPage(id) || 'home';
+  currentPage = page;
   document.querySelectorAll('.topic-section').forEach(sec => sec.style.display = 'none');
-  const sec = document.getElementById('topic-' + id);
+  const sec = document.getElementById('topic-' + page);
   if (sec) sec.style.display = 'block';
   document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
-  const btn = document.querySelector('.nav-item[data-topic="' + id + '"]');
+  const btn = document.querySelector('.nav-item[data-topic="' + page + '"]');
   if (btn) btn.classList.add('active');
-  if (id === 'home') { refreshStats(); initOverview(); }
-  else if (id === 'exam') { renderExamHome(); }
-  else if (id === 'review') { renderReview(); }
-  else if (id === 'flagged') { renderFlagged(); }
-  else { renderQuiz(id); }
-  window.scrollTo(0, 0);
+  if (page === 'home') { refreshStats(); initOverview(); }
+  else if (page === 'exam') { renderExamHome(); }
+  else if (page === 'review') { renderReview(); }
+  else if (page === 'flagged') { renderFlagged(); }
+  else { renderQuiz(page); }
+  store.set(UI_KEY, JSON.stringify({ page: page }));
+  restoreScroll(page);
 }
+
+window.addEventListener('scroll', () => { if (currentPage) scrollPos[currentPage] = window.scrollY || 0; }, { passive: true });
+window.addEventListener('hashchange', () => {
+  if (suppressHashHandler) return;
+  renderPage(pageFromHash() || 'home');
+});
 
 /* ===================== Topic quiz ===================== */
 function optionButtonsHtml(q, onclickTpl) {
@@ -1282,7 +1386,14 @@ let exam = null;          // { qs: [{tid, idx, q}], ans: {}, secsLeft, interval,
 const EXAM_OPTIONS = [ { n: 20, mins: 25 }, { n: 40, mins: 50 }, { n: 60, mins: 75 } ];
 
 function renderExamHome() {
-  if (exam && !exam.submitted) { return; } // đang thi — giữ nguyên màn hình
+  if (exam && !exam.submitted) {
+    // đang thi: nếu DOM chưa có đề (vừa reload hoặc vừa quay lại trang) thì dựng lại
+    if (!document.getElementById('exam-list')) {
+      renderExamPaper();
+      if (!exam.interval) exam.interval = setInterval(examTick, 1000);
+    }
+    return;
+  }
   const area = document.getElementById('exam-area');
   const pool = examPoolSize();
   area.innerHTML = `
@@ -1311,6 +1422,7 @@ function startExam(count, mins) {
   exam = { qs: pool.slice(0, Math.min(count, pool.length)), ans: {}, secsLeft: mins * 60, interval: null, submitted: false };
   renderExamPaper();
   exam.interval = setInterval(examTick, 1000);
+  saveExam();
 }
 
 function fmtTime(s) {
@@ -1325,6 +1437,7 @@ function examTick() {
     el.textContent = '⏱ ' + fmtTime(Math.max(0, exam.secsLeft));
     el.classList.toggle('low', exam.secsLeft <= 300);
   }
+  if (exam.secsLeft % 5 === 0) scheduleExamSave();
   if (exam.secsLeft <= 0) submitExam(true);
 }
 
@@ -1352,7 +1465,16 @@ function renderExamPaper() {
       </div>`;
     list.appendChild(card);
   });
-  window.scrollTo(0, 0);
+  // khôi phục các lựa chọn đã chọn trước đó
+  Object.keys(exam.ans).forEach(i => {
+    const optsDiv = document.getElementById('ex-opts-' + i);
+    if (!optsDiv) return;
+    optsDiv.querySelectorAll('.opt-btn').forEach(btn => {
+      btn.classList.toggle('selected', btn.getAttribute('data-key') === exam.ans[i]);
+    });
+  });
+  const pr0 = document.getElementById('exam-prog');
+  if (pr0) pr0.textContent = `Đã trả lời ${Object.keys(exam.ans).length}/${exam.qs.length}`;
 }
 
 function examPick(i, key) {
@@ -1363,12 +1485,14 @@ function examPick(i, key) {
     btn.classList.toggle('selected', btn.getAttribute('data-key') === key);
   });
   document.getElementById('exam-prog').textContent = `Đã trả lời ${Object.keys(exam.ans).length}/${exam.qs.length}`;
+  scheduleExamSave();
 }
 
 function abandonExam() {
   if (!confirm('Hủy bài thi hiện tại?')) return;
   clearInterval(exam.interval);
   exam = null;
+  store.del(EXAM_KEY);
   renderExamHome();
 }
 
@@ -1378,6 +1502,7 @@ function submitExam(auto) {
   if (!auto && unanswered > 0 && !confirm(`Còn ${unanswered} câu chưa trả lời. Nộp bài luôn?`)) return;
   exam.submitted = true;
   clearInterval(exam.interval);
+  saveExam();
 
   let correct = 0;
   const byTopic = {};
@@ -1408,7 +1533,7 @@ function submitExam(auto) {
     <div class="score ${cls}">${correct}/${exam.qs.length} · ${pct}%</div>
     <p class="lbl" style="color:#5b6178;font-size:0.82rem">Mốc tham khảo: ≥75% là vùng an toàn cho kỳ thi thật. Cuộn xuống để xem lại từng câu (đáp án đúng được tô xanh).</p>
     <table><thead><tr><th>Chủ đề</th><th>Đúng</th><th>Tỷ lệ</th></tr></thead><tbody>${rows}</tbody></table>
-    <div style="margin-top:14px"><button class="btn-primary" onclick="exam=null;renderExamHome();window.scrollTo(0,0)">🔄 Làm đề khác</button></div>`;
+    <div style="margin-top:14px"><button class="btn-primary" onclick="exam=null;store.del(EXAM_KEY);renderExamHome();window.scrollTo(0,0)">🔄 Làm đề khác</button></div>`;
   topbar.replaceWith(result);
   window.scrollTo(0, 0);
 }
@@ -1416,6 +1541,9 @@ function submitExam(auto) {
 /* ===================== Boot ===================== */
 (async function boot() {
   await loadProgress();
+  const restored = await loadExam();
+  if (restored && (exam.submitted || exam.secsLeft <= 0)) { exam = null; await store.del(EXAM_KEY); }
+
   if (!hasStorage) {
     const note = document.getElementById('storage-note');
     if (note) note.style.display = 'block';
@@ -1423,7 +1551,17 @@ function submitExam(auto) {
   initOverview();
   refreshStats();
   TOPIC_META.forEach(m => renderQuiz(m.id));
-  selectTopic('home');
+
+  // Trang mở đầu: ưu tiên URL, rồi tới trang đang xem lần trước, rồi bài thi dở, cuối cùng là home
+  let page = pageFromHash();
+  if (!page) {
+    try { const ui = JSON.parse((await store.get(UI_KEY)) || '{}'); page = validPage(ui.page); } catch (e) {}
+  }
+  if (!page && exam) page = 'exam';
+  replaceTopic(page || 'home');
+
+  window.addEventListener('beforeunload', () => { saveProgress(); if (exam) saveExam(); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) { saveProgress(); if (exam) saveExam(); } });
 })();
 </script>
 </body>
