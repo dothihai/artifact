@@ -169,6 +169,27 @@ body {
 .exam-topbar .timer.low { color: #fca5a5; }
 .exam-topbar .prog { font-size: 0.82rem; color: #c7cdea; }
 .opt-btn.selected { border-color: #4a5bd6; background: #eef0fc; }
+/* ===== chọn đáp án bằng radio / checkbox + nút Kiểm tra ===== */
+label.opt-btn { display: flex; align-items: flex-start; gap: 9px; }
+label.opt-btn input { margin: 3px 0 0 0; flex: 0 0 auto; width: 15px; height: 15px; accent-color: #4a5bd6; cursor: pointer; }
+label.opt-btn span { flex: 1; }
+label.opt-btn.disabled { cursor: default; opacity: 1; pointer-events: none; }
+.q-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 2px; }
+.btn-check {
+  background: #4a5bd6; color: #fff; border: none; border-radius: 6px;
+  padding: 6px 14px; font-size: 0.82rem; font-weight: 600; cursor: pointer;
+}
+.btn-check:hover:not(:disabled) { background: #3b49b0; }
+.btn-check:disabled { background: #c9cdE4; cursor: not-allowed; }
+.btn-redo {
+  background: #eef1fb; border: 1px solid #d5daf0; border-radius: 6px;
+  padding: 5px 11px; font-size: 0.78rem; cursor: pointer; color: #333;
+}
+.btn-redo:hover { background: #dfe4fa; }
+.multi-hint { font-size: 0.78rem; color: #b45309; background: #fff7e6; border: 1px solid #f4d999; border-radius: 5px; padding: 3px 8px; }
+.verdict { font-size: 0.84rem; font-weight: 600; }
+.verdict.ok { color: #16a34a; }
+.verdict.no { color: #dc2626; }
 .exam-result { background: #fff; border: 1px solid #e4e7f2; border-radius: 12px; padding: 20px; margin-bottom: 18px; }
 .exam-result h3 { margin: 0 0 6px 0; }
 .exam-result .score { font-size: 2rem; font-weight: 800; }
@@ -1049,7 +1070,9 @@ async function resetAll() {
 /* ===================== Helpers ===================== */
 function escapeHtml(s) { const d = document.createElement('div'); d.innerText = s || ''; return d.innerHTML; }
 function qKey(tid, idx) { return tid + '-' + idx; }
-function isCorrect(q, ans) { return !!q.correct && q.correct.includes(ans); }
+function normAns(a) { return String(a || '').split('').filter(c => /[A-Z]/.test(c)).sort().join(''); }
+function isMulti(q) { return !!q.correct && normAns(q.correct).length > 1; }
+function isCorrect(q, ans) { return !!q.correct && normAns(ans) !== '' && normAns(ans) === normAns(q.correct); }
 function topicTitle(tid) { const m = TOPIC_META.find(x => String(x.id) === String(tid)); return m ? m.id + '. ' + m.title : tid; }
 function accClass(p) { return p >= 75 ? 'good' : (p >= 60 ? 'mid' : 'bad'); }
 
@@ -1187,16 +1210,113 @@ window.addEventListener('hashchange', () => {
   renderPage(pageFromHash() || 'home');
 });
 
-/* ===================== Topic quiz ===================== */
-function optionButtonsHtml(q, onclickTpl) {
-  const optKeys = Object.keys(q.options).sort();
-  let optsHtml = '';
-  optKeys.forEach(k => {
-    optsHtml += `<button class="opt-btn" data-key="${k}" onclick="${onclickTpl.replace('__KEY__', k)}">
-      <b>${k}.</b> ${escapeHtml(q.options[k])}
-    </button>`;
+/* ===================== Câu hỏi: render + chấm khi bấm "Kiểm tra" ===================== */
+/* ns: 't' = trong chủ đề, 'rv' = ôn câu sai, 'fl' = câu đã đánh dấu */
+function optsId(ns, tid, idx)  { return `opts-${ns}-${tid}-${idx}`; }
+function explId(ns, tid, idx)  { return `expl-${ns}-${tid}-${idx}`; }
+function chkId(ns, tid, idx)   { return `chk-${ns}-${tid}-${idx}`; }
+
+function optionInputsHtml(q, ns, tid, idx) {
+  const multi = isMulti(q);
+  const name = `sel-${ns}-${tid}-${idx}`;
+  return Object.keys(q.options).sort().map(k => `
+    <label class="opt-btn" data-key="${k}">
+      <input type="${multi ? 'checkbox' : 'radio'}" name="${name}" value="${k}"
+             onchange="onSelect('${ns}', '${tid}', ${idx})">
+      <span><b>${k}.</b> ${escapeHtml(q.options[k])}</span>
+    </label>`).join('');
+}
+
+function answerBarHtml(q, ns, tid, idx) {
+  const multi = isMulti(q);
+  return `<div class="q-actions" id="act-${ns}-${tid}-${idx}">
+      <button class="btn-check" id="${chkId(ns, tid, idx)}" disabled
+              onclick="checkAnswer('${ns}', '${tid}', ${idx})">✔️ Kiểm tra đáp án</button>
+      ${multi ? `<span class="multi-hint">Chọn ${normAns(q.correct).length} đáp án</span>` : ''}
+    </div>`;
+}
+
+function questionBodyHtml(q, ns, tid, idx) {
+  return `<div class="opts" id="${optsId(ns, tid, idx)}">${optionInputsHtml(q, ns, tid, idx)}</div>
+    ${answerBarHtml(q, ns, tid, idx)}
+    <div class="explanation" id="${explId(ns, tid, idx)}">
+      <b>Đáp án đúng: ${q.correct || '(xem giải thích)'}</b>${q.explanation ? ' — ' + escapeHtml(q.explanation) : ''}
+    </div>`;
+}
+
+function getSelection(optsDiv) {
+  return Array.from(optsDiv.querySelectorAll('input:checked')).map(i => i.value).sort().join('');
+}
+
+/* Đổi lựa chọn: bật nút Kiểm tra, tô nhẹ ô đang chọn — chưa chấm */
+function onSelect(ns, tid, idx) {
+  const optsDiv = document.getElementById(optsId(ns, tid, idx));
+  if (!optsDiv) return;
+  optsDiv.querySelectorAll('.opt-btn').forEach(lb => {
+    const inp = lb.querySelector('input');
+    lb.classList.toggle('selected', !!(inp && inp.checked));
   });
-  return optsHtml;
+  const btn = document.getElementById(chkId(ns, tid, idx));
+  if (btn) btn.disabled = getSelection(optsDiv) === '';
+}
+
+/* Chấm 1 câu */
+function checkAnswer(ns, tid, idx) {
+  const optsDiv = document.getElementById(optsId(ns, tid, idx));
+  if (!optsDiv || optsDiv.dataset.done) return;
+  const chosen = getSelection(optsDiv);
+  if (!chosen) return;
+  const q = (QUESTIONS[tid] || [])[idx];
+  if (!q) return;
+  optsDiv.dataset.done = '1';
+  if (!state[tid]) state[tid] = {};
+  state[tid][idx] = chosen;
+  gradeCardDom(optsDiv, q, chosen);
+  const ex = document.getElementById(explId(ns, tid, idx));
+  if (ex) ex.classList.add('show');
+  const act = document.getElementById(`act-${ns}-${tid}-${idx}`);
+  if (act) act.innerHTML = `<span class="verdict ${isCorrect(q, chosen) ? 'ok' : 'no'}">${isCorrect(q, chosen) ? '✅ Chính xác' : '❌ Chưa đúng — bạn chọn ' + chosen}</span>
+    <button class="btn-redo" onclick="redoQuestion('${ns}', '${tid}', ${idx})">↺ Làm lại</button>`;
+  if (ns !== 't') refreshTopicDomIfRendered(tid);
+  updateScore(tid);
+  updateNavCounts();
+  scheduleSave();
+}
+
+/* Làm lại 1 câu: xóa kết quả đã lưu của câu đó */
+function redoQuestion(ns, tid, idx) {
+  if (state[tid]) delete state[tid][idx];
+  const q = (QUESTIONS[tid] || [])[idx];
+  const optsDiv = document.getElementById(optsId(ns, tid, idx));
+  if (optsDiv && q) {
+    delete optsDiv.dataset.done;
+    optsDiv.innerHTML = optionInputsHtml(q, ns, tid, idx);
+  }
+  const ex = document.getElementById(explId(ns, tid, idx));
+  if (ex) ex.classList.remove('show');
+  const act = document.getElementById(`act-${ns}-${tid}-${idx}`);
+  if (act && q) act.outerHTML = answerBarHtml(q, ns, tid, idx);
+  if (ns !== 't') refreshTopicDomIfRendered(tid);
+  updateScore(tid);
+  updateNavCounts();
+  scheduleSave();
+}
+
+/* Hiển thị lại trạng thái đã chấm (khi render lại từ dữ liệu đã lưu) */
+function applyAnswered(ns, tid, idx, q, chosen) {
+  const optsDiv = document.getElementById(optsId(ns, tid, idx));
+  if (!optsDiv) return;
+  optsDiv.dataset.done = '1';
+  normAns(chosen).split('').forEach(k => {
+    const inp = optsDiv.querySelector(`input[value="${k}"]`);
+    if (inp) inp.checked = true;
+  });
+  gradeCardDom(optsDiv, q, chosen);
+  const ex = document.getElementById(explId(ns, tid, idx));
+  if (ex) ex.classList.add('show');
+  const act = document.getElementById(`act-${ns}-${tid}-${idx}`);
+  if (act) act.innerHTML = `<span class="verdict ${isCorrect(q, chosen) ? 'ok' : 'no'}">${isCorrect(q, chosen) ? '✅ Chính xác' : '❌ Chưa đúng — bạn chọn ' + chosen}</span>
+    <button class="btn-redo" onclick="redoQuestion('${ns}', '${tid}', ${idx})">↺ Làm lại</button>`;
 }
 
 function flagBtnHtml(tid, idx, ns) {
@@ -1213,16 +1333,21 @@ function toggleFlag(tid, idx) {
   });
   updateNavCounts();
   scheduleSave();
-  if (document.getElementById('topic-flagged').style.display !== 'none') renderFlagged();
+  const fl = document.getElementById('topic-flagged');
+  if (fl && fl.style.display !== 'none') renderFlagged();
 }
 
 function gradeCardDom(optsDiv, q, chosen) {
-  optsDiv.querySelectorAll('.opt-btn').forEach(btn => {
-    btn.classList.add('disabled');
-    btn.onclick = null;
-    const k = btn.getAttribute('data-key');
-    if (isCorrect(q, k)) btn.classList.add('correct');
-    else if (k === chosen) btn.classList.add('wrong');
+  const sel = normAns(chosen);
+  const cor = normAns(q.correct);
+  optsDiv.querySelectorAll('.opt-btn').forEach(lb => {
+    lb.classList.add('disabled');
+    lb.classList.remove('selected');
+    const inp = lb.querySelector('input');
+    if (inp) inp.disabled = true;
+    const k = lb.getAttribute('data-key');
+    if (cor.indexOf(k) >= 0) lb.classList.add('correct');
+    else if (sel.indexOf(k) >= 0) lb.classList.add('wrong');
   });
 }
 
@@ -1240,30 +1365,12 @@ function renderQuiz(topicId) {
         <div class="q-title"><span class="q-num">Câu ${idx + 1} (Q${q.qnum}).</span> ${escapeHtml(q.question).replace(/\n/g, '<br>')}</div>
         ${flagBtnHtml(topicId, idx, 't')}
       </div>
-      <div class="opts" id="opts-${topicId}-${idx}">${optionButtonsHtml(q, `answer(${topicId}, ${idx}, '__KEY__')`)}</div>
-      <div class="explanation" id="expl-${topicId}-${idx}">
-        <b>Đáp án đúng: ${q.correct || '(xem giải thích)'}</b>${q.explanation ? ' — ' + escapeHtml(q.explanation) : ''}
-      </div>
-    `;
+      ${questionBodyHtml(q, 't', topicId, idx)}`;
     container.appendChild(card);
     const prev = state[topicId][idx];
-    if (prev !== undefined) {
-      gradeCardDom(document.getElementById(`opts-${topicId}-${idx}`), q, prev);
-      document.getElementById(`expl-${topicId}-${idx}`).classList.add('show');
-    }
+    if (prev !== undefined) applyAnswered('t', topicId, idx, q, prev);
   });
   updateScore(topicId);
-}
-
-function answer(topicId, idx, key) {
-  if (state[topicId][idx] !== undefined) return;
-  state[topicId][idx] = key;
-  const q = (QUESTIONS[topicId] || [])[idx];
-  gradeCardDom(document.getElementById(`opts-${topicId}-${idx}`), q, key);
-  document.getElementById(`expl-${topicId}-${idx}`).classList.add('show');
-  updateScore(topicId);
-  updateNavCounts();
-  scheduleSave();
 }
 
 function updateScore(topicId) {
@@ -1285,7 +1392,7 @@ function resetTopic(topicId) {
   scheduleSave();
 }
 
-/* ===================== Review incorrect ===================== */
+/* ===================== Ôn câu sai ===================== */
 function renderReview() {
   const container = document.getElementById('review-list');
   container.innerHTML = '';
@@ -1294,7 +1401,7 @@ function renderReview() {
     container.innerHTML = '<div class="empty-note">🎉 Không có câu sai nào cần ôn. Hãy tiếp tục luyện tập trong các chủ đề!</div>';
     return;
   }
-  s.wrong.forEach(({ tid, idx }, i) => {
+  s.wrong.forEach(({ tid, idx }) => {
     const q = QUESTIONS[tid][idx];
     const card = document.createElement('div');
     card.className = 'q-card';
@@ -1304,26 +1411,9 @@ function renderReview() {
         <div class="q-title"><span class="q-num">Q${q.qnum}.</span> ${escapeHtml(q.question).replace(/\n/g, '<br>')}</div>
         ${flagBtnHtml(tid, idx, 'r')}
       </div>
-      <div class="opts" id="opts-rv-${tid}-${idx}">${optionButtonsHtml(q, `reAnswer('${tid}', ${idx}, '__KEY__')`)}</div>
-      <div class="explanation" id="expl-rv-${tid}-${idx}">
-        <b>Đáp án đúng: ${q.correct || '(xem giải thích)'}</b>${q.explanation ? ' — ' + escapeHtml(q.explanation) : ''}
-      </div>
-    `;
+      ${questionBodyHtml(q, 'rv', tid, idx)}`;
     container.appendChild(card);
   });
-}
-
-function reAnswer(tid, idx, key) {
-  const optsDiv = document.getElementById(`opts-rv-${tid}-${idx}`);
-  if (!optsDiv || optsDiv.dataset.done) return;
-  optsDiv.dataset.done = '1';
-  const q = QUESTIONS[tid][idx];
-  state[tid][idx] = key;
-  gradeCardDom(optsDiv, q, key);
-  document.getElementById(`expl-rv-${tid}-${idx}`).classList.add('show');
-  refreshTopicDomIfRendered(tid);
-  updateNavCounts();
-  scheduleSave();
 }
 
 function refreshTopicDomIfRendered(tid) {
@@ -1331,7 +1421,7 @@ function refreshTopicDomIfRendered(tid) {
   if (container && container.children.length) renderQuiz(tid);
 }
 
-/* ===================== Flagged ===================== */
+/* ===================== Câu đã đánh dấu ===================== */
 function renderFlagged() {
   const container = document.getElementById('flagged-list');
   container.innerHTML = '';
@@ -1345,7 +1435,6 @@ function renderFlagged() {
     const tid = key.slice(0, sep), idx = Number(key.slice(sep + 1));
     const q = (QUESTIONS[tid] || [])[idx];
     if (!q) return;
-    const answered = state[tid] && state[tid][idx] !== undefined;
     const card = document.createElement('div');
     card.className = 'q-card';
     card.innerHTML = `
@@ -1354,31 +1443,11 @@ function renderFlagged() {
         <div class="q-title"><span class="q-num">Q${q.qnum}.</span> ${escapeHtml(q.question).replace(/\n/g, '<br>')}</div>
         ${flagBtnHtml(tid, idx, 'f')}
       </div>
-      <div class="opts" id="opts-fl-${tid}-${idx}">${optionButtonsHtml(q, `flAnswer('${tid}', ${idx}, '__KEY__')`)}</div>
-      <div class="explanation" id="expl-fl-${tid}-${idx}">
-        <b>Đáp án đúng: ${q.correct || '(xem giải thích)'}</b>${q.explanation ? ' — ' + escapeHtml(q.explanation) : ''}
-      </div>
-    `;
+      ${questionBodyHtml(q, 'fl', tid, idx)}`;
     container.appendChild(card);
-    if (answered) {
-      gradeCardDom(document.getElementById(`opts-fl-${tid}-${idx}`), q, state[tid][idx]);
-      document.getElementById(`expl-fl-${tid}-${idx}`).classList.add('show');
-    }
+    const prev = state[tid] && state[tid][idx];
+    if (prev !== undefined && prev !== null) applyAnswered('fl', tid, idx, q, prev);
   });
-}
-
-function flAnswer(tid, idx, key) {
-  const optsDiv = document.getElementById(`opts-fl-${tid}-${idx}`);
-  if (!optsDiv || optsDiv.dataset.done) return;
-  optsDiv.dataset.done = '1';
-  if (!state[tid]) state[tid] = {};
-  state[tid][idx] = key;
-  const q = QUESTIONS[tid][idx];
-  gradeCardDom(optsDiv, q, key);
-  document.getElementById(`expl-fl-${tid}-${idx}`).classList.add('show');
-  refreshTopicDomIfRendered(tid);
-  updateNavCounts();
-  scheduleSave();
 }
 
 /* ===================== Mock exam ===================== */
@@ -1459,7 +1528,8 @@ function renderExamPaper() {
     card.className = 'q-card';
     card.innerHTML = `
       <div class="q-title"><span class="q-num">Câu ${i + 1}.</span> ${escapeHtml(q.question).replace(/\n/g, '<br>')}</div>
-      <div class="opts" id="ex-opts-${i}">${optionButtonsHtml(q, `examPick(${i}, '__KEY__')`)}</div>
+      <div class="opts" id="ex-opts-${i}">${examOptionsHtml(q, i)}</div>
+      ${isMulti(q) ? `<div class="q-actions"><span class="multi-hint">Chọn ${normAns(q.correct).length} đáp án</span></div>` : ''}
       <div class="explanation" id="ex-expl-${i}">
         <b>Đáp án đúng: ${q.correct}</b>${q.explanation ? ' — ' + escapeHtml(q.explanation) : ''}
       </div>`;
@@ -1469,21 +1539,34 @@ function renderExamPaper() {
   Object.keys(exam.ans).forEach(i => {
     const optsDiv = document.getElementById('ex-opts-' + i);
     if (!optsDiv) return;
-    optsDiv.querySelectorAll('.opt-btn').forEach(btn => {
-      btn.classList.toggle('selected', btn.getAttribute('data-key') === exam.ans[i]);
+    normAns(exam.ans[i]).split('').forEach(k => {
+      const inp = optsDiv.querySelector(`input[value="${k}"]`);
+      if (inp) { inp.checked = true; inp.closest('.opt-btn').classList.add('selected'); }
     });
   });
   const pr0 = document.getElementById('exam-prog');
   if (pr0) pr0.textContent = `Đã trả lời ${Object.keys(exam.ans).length}/${exam.qs.length}`;
 }
 
-function examPick(i, key) {
+function examOptionsHtml(q, i) {
+  const multi = isMulti(q);
+  return Object.keys(q.options).sort().map(k => `
+    <label class="opt-btn" data-key="${k}">
+      <input type="${multi ? 'checkbox' : 'radio'}" name="ex-${i}" value="${k}" onchange="examPick(${i})">
+      <span><b>${k}.</b> ${escapeHtml(q.options[k])}</span>
+    </label>`).join('');
+}
+
+function examPick(i) {
   if (!exam || exam.submitted) return;
-  exam.ans[i] = key;
   const optsDiv = document.getElementById('ex-opts-' + i);
-  optsDiv.querySelectorAll('.opt-btn').forEach(btn => {
-    btn.classList.toggle('selected', btn.getAttribute('data-key') === key);
+  if (!optsDiv) return;
+  optsDiv.querySelectorAll('.opt-btn').forEach(lb => {
+    const inp = lb.querySelector('input');
+    lb.classList.toggle('selected', !!(inp && inp.checked));
   });
+  const sel = getSelection(optsDiv);
+  if (sel) exam.ans[i] = sel; else delete exam.ans[i];
   document.getElementById('exam-prog').textContent = `Đã trả lời ${Object.keys(exam.ans).length}/${exam.qs.length}`;
   scheduleExamSave();
 }
@@ -1507,7 +1590,7 @@ function submitExam(auto) {
   let correct = 0;
   const byTopic = {};
   exam.qs.forEach((item, i) => {
-    const ok = exam.ans[i] !== undefined && isCorrect(item.q, exam.ans[i]);
+    const ok = isCorrect(item.q, exam.ans[i]);
     if (ok) correct++;
     if (!byTopic[item.tid]) byTopic[item.tid] = { c: 0, t: 0 };
     byTopic[item.tid].t++;
