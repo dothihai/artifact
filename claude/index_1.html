@@ -5013,6 +5013,9 @@ function updateScore(topicId) {
   if (el.parentElement.parentElement.querySelector("h3")){
     el.parentElement.parentElement.querySelector("h3").textContent = `📝 Câu hỏi luyện tập (${list.length} câu)`;
   }
+  if (document.querySelector('.nav-item[data-topic="' + topicId + '"]')){
+      document.querySelector('.nav-item[data-topic="' + topicId + '"]').querySelector(".nav-count").textContent = `${list.length}`;
+  }
   updateFlaggedScore();
 }
 
