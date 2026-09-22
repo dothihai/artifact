@@ -3,7 +3,7 @@
 {
   "name": "Cpmai Study Guide",
   "schemaVersion": 1,
-  "description": "Tài liệu ôn thi PMI-CPMAI: tóm tắt kiến thức theo 17 chủ đề + 306 câu hỏi luyện tập tương tác (chọn đáp án để kiểm tra ngay, có giải thích)."
+  "description": "Tài liệu ôn thi PMI-CPMAI: tóm tắt kiến thức theo 17 chủ đề + 294 câu hỏi luyện tập tương tác (chọn đáp án để kiểm tra ngay, có giải thích)."
 }
 </script>
 <html lang="vi">
@@ -204,7 +204,7 @@ label.opt-btn.disabled { cursor: default; opacity: 1; pointer-events: none; }
 <div class="app">
   <div class="sidebar">
     <h1>🎯 PMI-CPMAI</h1>
-    <p class="sub">Study Guide · 306 câu · 17 chủ đề</p>
+    <p class="sub">Study Guide · 294 câu · 17 chủ đề</p>
     <button class="nav-item" data-topic="home" onclick="selectTopic('home')">
       <span class="dot" style="background:#4a5bd6"></span>
       <span class="nav-label">🏠 Trang chủ / Tổng quan</span>
@@ -247,10 +247,10 @@ label.opt-btn.disabled { cursor: default; opacity: 1; pointer-events: none; }
     <section class="topic-section" id="topic-home">
       <div class="home-header">
         <h1>PMI-CPMAI — Tổng Hợp Ôn Thi</h1>
-        <p>Tổng hợp từ toàn bộ <b>306 câu hỏi thực tế</b>, phân loại vào <b>17 chủ đề</b>. Mỗi chủ đề có phần tóm tắt kiến thức cần nhớ + bộ câu hỏi luyện tập tương tác (chọn đáp án để kiểm tra ngay).</p>
+        <p>Tổng hợp từ toàn bộ <b>294 câu hỏi thực tế</b>, phân loại vào <b>17 chủ đề</b>. Mỗi chủ đề có phần tóm tắt kiến thức cần nhớ + bộ câu hỏi luyện tập tương tác (chọn đáp án để kiểm tra ngay).</p>
       </div>
       <div class="statbar" id="statbar">
-        <div class="cell"><div class="big" id="st-done">0/306</div><div class="lbl">Đã làm</div></div>
+        <div class="cell"><div class="big" id="st-done">0/294</div><div class="lbl">Đã làm</div></div>
         <div class="cell"><div class="big" id="st-acc">–</div><div class="lbl">Tỷ lệ đúng</div></div>
         <div class="cell"><div class="big" id="st-wrong">0</div><div class="lbl">Câu sai cần ôn</div></div>
         <div class="pbar"><div id="st-bar" style="width:0%"></div></div>
@@ -384,7 +384,7 @@ label.opt-btn.disabled { cursor: default; opacity: 1; pointer-events: none; }
   <div class="summary-box">
     <h3>📚 Kiến thức cần nhớ</h3>
     
-<p>Chủ đề xuất hiện liên tục xuyên suốt 306 câu — tách biệt rõ hai loại là kỹ năng thi cốt lõi.</p>
+<p>Chủ đề xuất hiện liên tục xuyên suốt 294 câu — tách biệt rõ hai loại là kỹ năng thi cốt lõi.</p>
 <ul>
 <li><b>Noncognitive tasks</b> (lặp lại, dựa rule, xác định trước) → <b>traditional automation / RPA</b>, KHÔNG dùng AI.</li>
 <li><b>Cognitive tasks</b> (cần học từ data, xử lý sự không chắc chắn) → mới cần AI/ML.</li>
@@ -5010,6 +5010,9 @@ function updateScore(topicId) {
   });
   const el = document.getElementById('score-' + topicId);
   if (el) el.textContent = `Đã làm: ${answered}/${list.length} · Đúng: ${correct}`;
+  if (el.parentElement.parentElement.querySelector("h3")){
+    el.parentElement.parentElement.querySelector("h3").textContent = `📝 Câu hỏi luyện tập (${list.length} câu)`;
+  }
   updateFlaggedScore();
 }
 
