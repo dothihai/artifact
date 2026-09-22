@@ -4858,7 +4858,7 @@ function answerBarHtml(q, ns, tid, idx) {
   const multi = isMulti(q);
   return `<div class="q-actions" id="act-${ns}-${tid}-${idx}">
       <button class="btn-check" id="${chkId(ns, tid, idx)}" disabled
-              onclick="checkAnswer('${ns}', '${tid}', ${idx})">✔️ Kiểm tra đáp án</button>
+              onclick="checkAnswer('${ns}', '${tid}', ${idx})">✓ Kiểm tra đáp án</button>
       ${multi ? `<span class="multi-hint">Chọn ${normAns(q.correct).length} đáp án</span>` : ''}
     </div>`;
 }
